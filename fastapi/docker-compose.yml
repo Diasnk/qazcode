@@ -1,0 +1,28 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      # Embeddings service URL (Docker network)
+      - EMBEDDING_BASE_URL=http://embeddings:80/v1
+    volumes:
+      # Mount Chroma DB (build via notebook or set BUILD_CHROMA_IF_MISSING=1)
+      - ./notebooks/chroma_langchain_db:/app/notebooks/chroma_langchain_db
+      - ./extracted_data:/app/extracted_data
+    depends_on:
+      - embeddings
+
+  embeddings:
+    build:
+      context: .
+      dockerfile: Dockerfile.embeddings
+    ports:
+      - "8081:80"
+    environment:
+      - EMBEDDING_MODEL=ai-forever/ru-en-RoSBERTa
+    volumes:
+      - ./models:/data

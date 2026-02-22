@@ -1,0 +1,15 @@
+# Embedding service: serves ai-forever/ru-en-RoSBERTa (or EMBEDDING_MODEL) via OpenAI-compatible /v1/embeddings.
+# First run may download the model into the mounted /data volume (./models).
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir sentence-transformers fastapi uvicorn
+
+COPY src/embedding_server.py .
+
+ENV EMBEDDING_MODEL=ai-forever/ru-en-RoSBERTa
+
+EXPOSE 80
+
+CMD ["uvicorn", "embedding_server:app", "--host", "0.0.0.0", "--port", "80"]
