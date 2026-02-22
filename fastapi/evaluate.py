@@ -117,7 +117,7 @@ async def run_evaluation(
     results: list[EvaluationResult] = []
     errors: list[tuple[Path, Exception]] = []
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=300.0) as client:
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),

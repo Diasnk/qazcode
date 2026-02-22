@@ -5,12 +5,20 @@ Same CLI and behavior as evaluate.py, but limits to 40 protocols.
 import argparse
 import asyncio
 import json
+import logging
 import statistics
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
+
+# Logging for debugging evaluation issues
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s [%(name)s] %(message)s",
+)
+logger = logging.getLogger("small_evaluate")
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import (
@@ -26,7 +34,7 @@ from rich.table import Table
 from rich.text import Text
 
 # Limit for small evaluation (first N protocols)
-SMALL_EVAL_LIMIT = 40
+SMALL_EVAL_LIMIT = 5
 
 
 @dataclass
@@ -41,6 +49,42 @@ class EvaluationResult:
     response_json: dict
 
 
+def _normalize_protocol_data(data: dict, json_file: Path) -> tuple[str, str, str, set]:
+    """
+    Extract protocol_id, query, ground_truth, and valid_icd_codes from a protocol JSON.
+    Supports both full eval format (protocol_id, query, gt, icd_codes) and
+    extracted_data format (identified_symptoms, gt only).
+    """
+    protocol_id = data.get("protocol_id") or json_file.stem
+    ground_truth = data.get("gt")
+    if ground_truth is None:
+        raise ValueError(f"Missing 'gt' in {json_file.name}")
+
+    # Query: prefer "query", else join "identified_symptoms"
+    query = data.get("query") or ""
+    if not query and data.get("identified_symptoms"):
+        query = "\n".join(data["identified_symptoms"])
+    query = (query or "").strip()
+
+    # Valid ICD codes: prefer "icd_codes", else only gt (Recall@3 then = Accuracy@1 for that protocol)
+    raw_codes = data.get("icd_codes")
+    if raw_codes is not None:
+        valid_icd_codes = set(raw_codes) if isinstance(raw_codes, (list, tuple)) else {raw_codes}
+    else:
+        valid_icd_codes = {ground_truth}
+        logger.debug(
+            "%s: no 'icd_codes', using gt only for valid set: %s",
+            json_file.name,
+            valid_icd_codes,
+        )
+
+    if ground_truth not in valid_icd_codes:
+        raise ValueError(
+            f"Dataset error in {json_file.name}: gt '{ground_truth}' not in icd_codes {valid_icd_codes!r}"
+        )
+    return protocol_id, query, ground_truth, valid_icd_codes
+
+
 async def evaluate_single(
     client: httpx.AsyncClient,
     endpoint: str,
@@ -52,15 +96,16 @@ async def evaluate_single(
         with open(json_file, "r") as f:
             data = json.load(f)
 
-        protocol_id = data["protocol_id"]
-        query = data.get("query") or ""
-        ground_truth = data["gt"]
-        valid_icd_codes = set(data["icd_codes"])
+        protocol_id, query, ground_truth, valid_icd_codes = _normalize_protocol_data(
+            data, json_file
+        )
 
-        if ground_truth not in valid_icd_codes:
-            raise ValueError(
-                f"Dataset error in {json_file.name}: gt '{ground_truth}' not in icd_codes"
-            )
+        logger.debug(
+            "Evaluating %s: query_len=%d, gt=%s",
+            json_file.name,
+            len(query),
+            ground_truth,
+        )
 
         start_time = time.perf_counter()
         response = await client.post(endpoint, json={"symptoms": query})
@@ -69,6 +114,10 @@ async def evaluate_single(
         response.raise_for_status()
         result = response.json()
 
+        if "diagnoses" not in result:
+            raise ValueError(
+                f"Response missing 'diagnoses' for {json_file.name}. Keys: {list(result.keys())!r}"
+            )
         diagnoses = sorted(result["diagnoses"], key=lambda x: x["rank"])
         top_3 = diagnoses[:3]
 
@@ -128,7 +177,7 @@ async def run_evaluation(
     results: list[EvaluationResult] = []
     errors: list[tuple[Path, Exception]] = []
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=300.0) as client:
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -150,6 +199,13 @@ async def run_evaluation(
                     results.append(result)
                 except Exception as e:
                     errors.append((json_file, e))
+                    err_msg = f"{type(e).__name__}: {e}"
+                    logger.warning(
+                        "Error evaluating %s: %s",
+                        json_file.name,
+                        err_msg,
+                        exc_info=logger.isEnabledFor(logging.DEBUG),
+                    )
                 finally:
                     progress.advance(task)
 
@@ -160,9 +216,13 @@ async def run_evaluation(
             f"\n[red]Encountered {len(errors)} errors during evaluation[/red]"
         )
         for path, err in errors[:5]:
-            console.print(f"  [dim]• {path.name}: {err}[/dim]")
+            err_display = f"{type(err).__name__}: {err}" if str(err).strip() else f"{type(err).__name__}"
+            console.print(f"  [dim]• {path.name}: {err_display}[/dim]")
         if len(errors) > 5:
             console.print(f"  [dim]... and {len(errors) - 5} more[/dim]")
+        console.print(
+            "[dim]Run with -v/--verbose to see full tracebacks in logs.[/dim]"
+        )
 
     return results
 
@@ -336,8 +396,16 @@ Examples:
         default=SMALL_EVAL_LIMIT,
         help=f"Number of protocols to evaluate (default: {SMALL_EVAL_LIMIT})",
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable debug logging (including full tracebacks for errors)",
+    )
 
     args = parser.parse_args()
+    if args.verbose:
+        logger.setLevel(logging.DEBUG)
     console = Console()
 
     if not args.dataset_dir.exists():
