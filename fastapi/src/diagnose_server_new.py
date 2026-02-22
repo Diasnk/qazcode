@@ -3,14 +3,14 @@ RAG-based diagnostic server: same pipeline as notebooks/test2.ipynb
 (Chroma + get_top3_protocols + LLM) exposed as POST /diagnose for evaluate.py.
 
 Prerequisites:
-  - .env: OPENAI_API_KEY (for LLM). Optional: OPENAI_MODEL (default gpt-4.1).
+  - .env: API_KEY + HUB_URL (QazCode LLM hub). Optional: OPENAI_MODEL (default oss-120b).
   - Embeddings service on EMBEDDING_BASE_URL (default http://localhost:8081/v1).
   - Vector store: either run the notebook once to build notebooks/chroma_langchain_db,
     or set BUILD_CHROMA_IF_MISSING=1 and have extracted_data/*.json (with
     identified_symptoms + gt) so the server builds the DB on startup.
 
 Env:
-  - OPENAI_API_KEY, OPENAI_MODEL (LLM)
+  - API_KEY, HUB_URL (LLM); OPENAI_MODEL (optional, default oss-120b)
   - EMBEDDING_BASE_URL (default http://localhost:8081/v1)
   - EMBEDDING_MODEL (default ai-forever/ru-en-RoSBERTa)
   - BUILD_CHROMA_IF_MISSING=1 to build Chroma from extracted_data if DB missing
@@ -62,7 +62,7 @@ from starlette.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Annotated
 
-from langchain.chat_models import init_chat_model
+from langchain_openai import ChatOpenAI
 from langchain.tools import tool
 from langchain.agents import create_agent
 from langchain_openai import OpenAIEmbeddings
@@ -333,8 +333,17 @@ def predict(symptoms: str) -> AgentResponse:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global agent, llm
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise RuntimeError("Set OPENAI_API_KEY in .env for the LLM.")
+    api_key = os.environ.get("API_KEY")
+    hub_url = os.environ.get("HUB_URL")
+    if not api_key or not hub_url:
+        raise RuntimeError("Set API_KEY and HUB_URL in .env for the LLM (QazCode hub).")
+    model_id = os.environ.get("OPENAI_MODEL", "oss-120b")
+    llm = ChatOpenAI(
+        model=model_id,
+        api_key=api_key,
+        base_url=hub_url,
+        temperature=0,
+    )
 
     embedding_base = os.environ.get("EMBEDDING_BASE_URL", "http://localhost:8081/v1")
     embedding_model = os.environ.get("EMBEDDING_MODEL", "ai-forever/ru-en-RoSBERTa")
@@ -397,8 +406,7 @@ async def lifespan(app: FastAPI):
             )
         return "\n\n---\n\n".join(parts)
 
-    model_id = os.environ.get("OPENAI_MODEL", "gpt-4.1")
-    llm = init_chat_model(model_id, temperature=0)
+    # llm already set above (API_KEY + HUB_URL)
     # Keep global for normalize_query (symptom normalization before RAG)
 
     prompt = """

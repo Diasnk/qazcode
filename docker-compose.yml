@@ -1,14 +1,18 @@
-# Root compose: run from project root with: docker compose up
-# Starts: embeddings service, FastAPI app, Next.js website
+# Single compose for the whole project. Run from project root only:
+#
+#   docker compose up
+#
+# Starts: local embeddings (ru-en-RoSBERTa), FastAPI app, Next.js web.
+# No need to run docker compose inside fastapi/ or nextjs/.
 
 services:
-  # ----- FastAPI stack (from fastapi/) -----
+  # ----- Local embeddings (FastAPI) -----
   embeddings:
     build:
       context: ./fastapi
       dockerfile: Dockerfile.embeddings
     ports:
-      - "8081:80"
+      - "8082:80"
     environment:
       - EMBEDDING_MODEL=ai-forever/ru-en-RoSBERTa
     volumes:
@@ -30,7 +34,7 @@ services:
     depends_on:
       - embeddings
 
-  # ----- Next.js website (from nextjs/) -----
+  # ----- Next.js (from nextjs/) -----
   web:
     build:
       context: ./nextjs

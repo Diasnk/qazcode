@@ -217,9 +217,6 @@ __marimo__/
 # Cached embedding model weights
 models/
 
-# Chroma vector DB (generated locally, do not commit)
-chroma_langchain_db/
-notebooks/chroma_langchain_db/
 
 # Evaluation run outputs (small_evaluate.py / evaluate.py)
 data/evals/
@@ -227,7 +224,5 @@ data/evals/
 # Mac OS
 .DS_Store
 **/.DS_Store
-
-notebooks/chroma_langchain_db/
 
 data/

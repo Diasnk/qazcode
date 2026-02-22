@@ -3,7 +3,7 @@ Diagnostic server that runs the notebook agent (get_top3_protocols + LLM)
 and exposes POST /diagnose for evaluate.py.
 
 Prerequisites:
-  - .env with OPENAI_API_KEY (for LLM via init_chat_model). Optional: OPENAI_MODEL (default gpt-4.1, same as notebook).
+  - .env with API_KEY and HUB_URL (for LLM: oss-120b via OpenAI-compatible API, same as notebook).
   - Local embeddings: docker compose up -d (or embeddings on localhost:8081)
   - Vector store built: run the notebook once to populate notebooks/chroma_langchain_db
 
@@ -57,7 +57,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Annotated
 
-from langchain.chat_models import init_chat_model
+from langchain_openai import ChatOpenAI
 from langchain.tools import tool
 from langchain.agents import create_agent
 from langchain_openai import OpenAIEmbeddings
@@ -229,8 +229,12 @@ def predict(symptoms: str) -> AgentResponse:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global agent
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise RuntimeError("Set OPENAI_API_KEY in .env for the LLM.")
+    API_KEY = os.environ.get("API_KEY")
+    HUB_URL = os.environ.get("HUB_URL")
+    if not API_KEY:
+        raise RuntimeError("API_KEY is not set in environment variables. Set API_KEY in .env for the LLM.")
+    if not HUB_URL:
+        raise RuntimeError("HUB_URL is not set in environment variables. Set HUB_URL in .env for the LLM.")
     if not CHROMA_DIR.exists():
         raise RuntimeError(
             f"Chroma DB not found at {CHROMA_DIR}. "
@@ -282,8 +286,12 @@ async def lifespan(app: FastAPI):
             )
         return "\n\n---\n\n".join(parts)
 
-    model_id = os.environ.get("OPENAI_MODEL", "gpt-4.1")
-    llm = init_chat_model(model_id, temperature=0)
+    llm = ChatOpenAI(
+        model="oss-120b",
+        api_key=API_KEY,
+        base_url=HUB_URL,
+        temperature=0,
+    )
     prompt = (
         "You are a medical diagnosis assistant. "
         "You MUST call get_top3_protocols first with the patient's symptoms (the user message) to retrieve the top 3 relevant clinical protocol excerpts. "
