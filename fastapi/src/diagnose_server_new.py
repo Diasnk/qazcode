@@ -58,6 +58,7 @@ def _log(level: str, msg: str, *args, **kwargs) -> None:
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from starlette.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Annotated
 
@@ -201,7 +202,13 @@ def _parse_agent_response(content: str) -> AgentResponse:
 
 
 def _agent_response_to_entries(parsed: AgentResponse) -> list[DiagnosisEntry]:
-    """Normalize AgentResponse to exactly 3 DiagnosisEntry items for the API."""
+    """Normalize Agent"падение с отведенной рукой и удар плечом",
+    "боль в области соединения ключицы с грудью (центр кости)",
+    "ограничение поднятия руки вверх, боль при попытке надеть одежду или дотянуться до верхних полок",
+    "ощущается отёк и болезненная шишка в зоне ключицы",
+    "ощущение щёлкающего звука/перемещения при движении",
+    "ночная боль, невозможность удобно лечь на поражённый бок",
+    "боль при глубоком вдохе"Response to exactly 3 DiagnosisEntry items for the API."""
     if parsed.diagnoses and len(parsed.diagnoses) >= 3:
         return list(parsed.diagnoses[:3])
     codes = list((parsed.ICD_10_code or [])[:3])
@@ -240,8 +247,7 @@ def _build_chroma_from_extracted_data(
         chunk_overlap=CHUNK_OVERLAP,
         add_start_index=True,
     )
-    all_splits = text_splitter.split_documents(docs)
-    logger.info("Split into %d chunks", len(all_splits))
+    all_splits = docs
 
     persist_dir.mkdir(parents=True, exist_ok=True)
     vector_store = Chroma(
@@ -365,21 +371,76 @@ async def lifespan(app: FastAPI):
         parts = []
         for i, (doc, score) in enumerate(results, 1):
             parts.append(
-                f"[Match {i}, score={score:.3f}] Source: {doc.metadata}\nContent: {doc.page_content}"
+                f"[Match {i}, score={score:.3f}]\n"
+                f"GT_ICD: {doc.metadata.get('gt')}\n"
+                f"Symptoms:\n{doc.page_content}"
             )
         return "\n\n---\n\n".join(parts)
 
     model_id = os.environ.get("OPENAI_MODEL", "gpt-4.1")
     llm = init_chat_model(model_id, temperature=0)
-    prompt = (
-        "You are a medical diagnosis assistant. "
-        "You MUST call get_top3_protocols first with the patient's symptoms (the user message) to retrieve the top 3 relevant clinical protocol excerpts. "
-        "Based only on that retrieved context, output exactly 3 differential diagnoses, ranked by likelihood (rank 1 = most likely). "
-        "Your final response must be a single valid JSON object with a \"diagnoses\" array of exactly 3 objects. "
-        "Each object must have: \"diagnosis\" (short human-readable name of the condition, e.g. in Russian or English), \"icd10_code\" (ICD-10 code, e.g. R42, G43.1), and \"explanation\" (one short sentence why this diagnosis fits the symptoms and retrieved context). "
-        "Example: {\"diagnoses\": [{\"diagnosis\": \"Головокружение\", \"icd10_code\": \"R42\", \"explanation\": \"Matches described dizziness and balance complaints.\"}, {\"diagnosis\": \"Мигрень\", \"icd10_code\": \"G43.1\", \"explanation\": \"Protocol excerpt supports migraine with aura.\"}, {\"diagnosis\": \"Тревожное расстройство\", \"icd10_code\": \"F41.0\", \"explanation\": \"Anxiety in differential from protocol.\"}]}. "
-        "Output only the JSON, no other text or markdown."
-    )
+
+    prompt = """
+        You are a clinical decision support system.
+
+        You MUST follow this workflow exactly:
+
+        1) Call `get_top3_protocols` first.
+        2) Use ONLY the retrieved cases/protocols as evidence.
+        3) Extract the patient's symptoms into a normalized list (canonical clinical terms).
+        4) Compare the patient symptoms to EACH retrieved case separately.
+        5) For each retrieved case, identify:
+        - matching symptoms (explicit overlap)
+        - missing expected symptoms
+        - contradictory symptoms (if any)
+        - demographic/context matches (age/sex if available)
+        6) Aggregate evidence across all retrieved cases by ICD-10 code.
+        7) Rank diagnoses using this priority order:
+        a) Highest symptom-overlap score
+        b) ICD-10 code frequency across retrieved cases (prefer codes repeated multiple times)
+        c) Fewer contradictions
+        d) Better match to demographics/context
+        8) Output exactly 3 UNIQUE ICD-10 codes ranked by likelihood.
+
+        Scoring guidance (use internally):
+        - Strong symptom match: +2
+        - Supporting symptom match: +1
+        - Demographic/context match: +1
+        - Contradictory symptom: -2
+        - Missing hallmark symptom: -1
+
+        Rules:
+        - Use ONLY retrieved content
+        - Do NOT invent diagnoses or codes not present in retrieved cases
+        - If uncertain, still choose the closest 3 ICD-10 codes from retrieved content
+        - Explanations must mention the specific overlapping symptoms and whether the code appeared in multiple retrieved cases
+        - Output JSON only (no markdown, no extra text)
+
+        Required JSON format:
+        {
+        "diagnoses": [
+            {
+            "rank": 1,
+            "diagnosis": "",
+            "icd10_code": "",
+            "explanation": ""
+            },
+            {
+            "rank": 2,
+            "diagnosis": "",
+            "icd10_code": "",
+            "explanation": ""
+            },
+            {
+            "rank": 3,
+            "diagnosis": "",
+            "icd10_code": "",
+            "explanation": ""
+            }
+        ]
+        }
+        """
+    
     agent = create_agent(llm, [get_top3_protocols], system_prompt=prompt)
 
     print("\nDiagnose server (notebook agent) running at http://127.0.0.1:8000/diagnose")
@@ -388,6 +449,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Diagnostic Server (Agent)", lifespan=lifespan)
+
+# CORS so browser clients (e.g. Next.js) can call /diagnose (handles OPTIONS preflight)
+_allowed_origins = os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").strip().split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in _allowed_origins if o.strip()],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 FALLBACK_RESPONSE = DiagnoseResponse(
     diagnoses=[
