@@ -1,11 +1,11 @@
 {
   "submission_name": "my_run",
-  "total_protocols": 1,
-  "accuracy_at_1_percent": 0.0,
-  "recall_at_3_percent": 0.0,
-  "latency_avg_s": 31.3,
-  "latency_min_s": 31.3,
-  "latency_max_s": 31.3,
-  "latency_p50_s": 31.3,
-  "latency_p95_s": 31.3
+  "total_protocols": 5,
+  "accuracy_at_1_percent": 60.0,
+  "recall_at_3_percent": 60.0,
+  "latency_avg_s": 48.001,
+  "latency_min_s": 33.393,
+  "latency_max_s": 59.491,
+  "latency_p50_s": 48.554,
+  "latency_p95_s": 66.124
 }

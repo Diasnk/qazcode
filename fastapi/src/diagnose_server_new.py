@@ -519,7 +519,7 @@ def _request_id_from_symptoms(symptoms: str) -> str:
 
 
 @app.post("/diagnose", response_model=DiagnoseResponse)
-async def handle_diagnose(request: DiagnoseRequest) -> DiagnoseResponse:
+def handle_diagnose(request: DiagnoseRequest) -> DiagnoseResponse:
     """Run the agent on symptoms and return top 3 ICD-10 codes in evaluate.py format."""
     symptoms = request.get_symptoms()
     request_id = _request_id_from_symptoms(symptoms)
