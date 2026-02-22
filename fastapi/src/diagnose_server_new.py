@@ -108,6 +108,7 @@ class DiagnoseResponse(BaseModel):
 
 # ---------- Globals (set in lifespan) ----------
 agent = None
+llm = None
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CHROMA_DIR = PROJECT_ROOT / "notebooks" / "chroma_langchain_db"
 DATA_DIR = PROJECT_ROOT / "extracted_data"
@@ -135,6 +136,31 @@ def _message_content_to_str(content) -> str:
                 parts.append(str(block))
         return "\n".join(parts)
     return str(content)
+
+
+def normalize_query(symptoms: str) -> str:
+    """Extract concise medical symptoms as a list using the LLM; return normalized text for RAG."""
+    if not (symptoms or symptoms.strip()):
+        return ""
+    if llm is None:
+        _log("warning", "normalize_query: LLM not ready, returning raw symptoms")
+        return symptoms.strip()
+    prompt = (
+        "Extract concise medical symptoms as a list from the text.\n"
+        "Do not add explanations.\n"
+        "Use short clinical phrases.\n\n"
+        f"{symptoms}"
+    )
+    try:
+        resp = llm.invoke(prompt)
+        out = _message_content_to_str(resp.content)
+        normalized = (out or "").strip()
+        if normalized:
+            _log("debug", "Normalized query: %s", normalized[:200] + "..." if len(normalized) > 200 else normalized)
+            return normalized
+    except Exception as e:
+        _log("warning", "normalize_query failed: %s: %s", type(e).__name__, e)
+    return symptoms.strip()
 
 
 # ICD-10 pattern: letter + 2 digits, optional . + digits (e.g. S22.0, R69, G43.1)
@@ -202,13 +228,7 @@ def _parse_agent_response(content: str) -> AgentResponse:
 
 
 def _agent_response_to_entries(parsed: AgentResponse) -> list[DiagnosisEntry]:
-    """Normalize Agent"падение с отведенной рукой и удар плечом",
-    "боль в области соединения ключицы с грудью (центр кости)",
-    "ограничение поднятия руки вверх, боль при попытке надеть одежду или дотянуться до верхних полок",
-    "ощущается отёк и болезненная шишка в зоне ключицы",
-    "ощущение щёлкающего звука/перемещения при движении",
-    "ночная боль, невозможность удобно лечь на поражённый бок",
-    "боль при глубоком вдохе"Response to exactly 3 DiagnosisEntry items for the API."""
+    """Normalize AgentResponse to exactly 3 DiagnosisEntry items for the API."""
     if parsed.diagnoses and len(parsed.diagnoses) >= 3:
         return list(parsed.diagnoses[:3])
     codes = list((parsed.ICD_10_code or [])[:3])
@@ -312,7 +332,7 @@ def predict(symptoms: str) -> AgentResponse:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global agent
+    global agent, llm
     if not os.environ.get("OPENAI_API_KEY"):
         raise RuntimeError("Set OPENAI_API_KEY in .env for the LLM.")
 
@@ -379,6 +399,7 @@ async def lifespan(app: FastAPI):
 
     model_id = os.environ.get("OPENAI_MODEL", "gpt-4.1")
     llm = init_chat_model(model_id, temperature=0)
+    # Keep global for normalize_query (symptom normalization before RAG)
 
     prompt = """
         You are a clinical decision support system.
@@ -505,7 +526,8 @@ async def handle_diagnose(request: DiagnoseRequest) -> DiagnoseResponse:
     )
 
     try:
-        parsed = predict(symptoms)
+        normalized_symptoms = normalize_query(symptoms)
+        parsed = predict(normalized_symptoms)
         entries = _agent_response_to_entries(parsed)
         _log(
             "info",
